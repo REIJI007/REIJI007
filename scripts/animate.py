@@ -10,11 +10,14 @@ Layers, back -> front, each with its own motion and material "feel":
   4  head (+hand)      - rigid tiny tilt, rides on the breath; eyes blink and glance aside;
                          hair: braids/bangs/strands with several overlapping frequencies so
                          neighbouring strands move independently
+                         face: a slow smile (mouth corners lift & widen, cheeks push the lower
+                         lids up a touch), a lopsided smirk while she glances aside, a brief
+                         lip press, and corners that breathe with her
 Uncovered slivers behind a moving layer are filled from an inpainted plate of the layer below.
 
 deps : opencv-python numpy (+ rembg[cpu] only if the cached masks are missing), ffmpeg
 usage: python scripts/animate.py assets/gothic-lolita.jpg out_dir [scale=1.6] [workers=2]
-       -> out_dir/gothic-lolita.mp4 (2560x1440@60, 8 s loop) + gothic-lolita.webp (1600@30)
+       -> out_dir/gothic-lolita.mp4 (2560x1440@60, 8 s loop) + gothic-lolita.webp (1280@24)
 """
 import sys, os, subprocess, numpy as np, cv2
 from multiprocessing import Pool
@@ -98,6 +101,42 @@ for e in EYES:
         yu = np.interp(x, ux, uy); yl = np.interp(x, lx, ly)
         taper = smooth((x - x0) / 12.0) * smooth((x1 - x) / 12.0)
         GAZE_W[int(np.ceil(yu + 0.5)):int(yl - 0.5) + 1, x] = taper
+
+# ======================= mouth / cheeks: expression =======================
+# The lips are closed line art, so every expression is a small, smooth warp of what is already
+# drawn (no repaint). Corner points traced on the source: left (616,390), right (689,404),
+# lower lip centre (650,409). Offsets are dest->src: dy = +u moves the feature UP by u px.
+# Summed peak gradient stays < 0.75 px/px, so the warp never folds.
+def gbump(cx, cy, sx, sy):
+    return np.exp(-(((gx - cx) / sx) ** 2 + ((gy - cy) / sy) ** 2) / 2).astype(np.float32)
+
+MCL, MCR = gbump(616, 390, 10, 7), gbump(689, 404, 10, 7)          # mouth corners
+LIP_LO = gbump(651, 410, 16, 5.5)                                     # lower lip body
+CHEEK_L, CHEEK_R = gbump(596, 330, 16, 9), gbump(738, 352, 20, 10)    # just under the lower lids
+ZERO = np.zeros((H, W), np.float32)
+# (dx, dy) per unit of each expression channel; sized to read at README width (~830 px,
+# i.e. about half of source scale), where the whole mouth is only ~40 px wide
+SMILE = (2.4 * MCL - 2.6 * MCR,                                        # corners widen outward
+         4.8 * MCL + 5.2 * MCR + 0.6 * LIP_LO + 1.4 * CHEEK_L + 1.6 * CHEEK_R)
+SMIRK = (-1.0 * MCR, 2.6 * MCR)                                        # right corner only
+PRESS = (-1.3 * MCL + 1.3 * MCR,                                       # corners draw in
+         2.0 * LIP_LO + 0.6 * MCL + 0.6 * MCR)                         # lower lip rolls up
+CORNER = (ZERO, 0.7 * MCL + 0.7 * MCR)                                 # tiny breath-linked lift
+
+def env(t, a, b, rise, fall):
+    """0 -> 1 -> 0 envelope: eases in over [a, a+rise], out over [b-fall, b]."""
+    if t <= a or t >= b: return 0.0
+    return smooth((t - a) / rise) * (1 - smooth((t - (b - fall)) / fall))
+
+def face_field(t, b):
+    """Expression timeline, all channels 0 at t = 0 and t = 8 s so the loop stays seamless.
+    1.2 s  a smile grows; it deepens into a lopsided smirk while she glances aside (2.4-4.2 s);
+    5.0 s  it fades; 5.35 s a brief lip press ("hm"); corners breathe with her throughout."""
+    smile = env(t, 1.2, 5.3, 0.7, 0.8)
+    smirk = env(t, 2.45, 4.5, 0.35, 0.5)
+    press = env(t, 5.35, 6.0, 0.18, 0.3)
+    w = ((SMILE, smile), (SMIRK, smirk), (PRESS, press), (CORNER, b))
+    return sum(f[0] * k for f, k in w), sum(f[1] * k for f, k in w)
 
 # ======================= head (+ hand): rigid, hard cut at the jaw =======================
 HEAD_POLY = [(395, 60), (470, 42), (560, 40), (700, 40), (830, 44), (950, 58), (1022, 140),
@@ -309,6 +348,11 @@ def frame(i):
     # eyes in source space: gaze (horizontal, between lids), then blink (vertical)
     mx = gx + head_dx; my = gy + head_dy
     myA = my.copy()
+    # expression: evaluated at the head-warped source position so it rides along with the head
+    fdx_, fdy_ = face_field(t, b)
+    m32x, m32y = mx.astype(np.float32), my.astype(np.float32)
+    mx = mx + cv2.remap(fdx_, m32x, m32y, cv2.INTER_LINEAR)
+    my = my + cv2.remap(fdy_, m32x, m32y, cv2.INTER_LINEAR)
     g = gaze(t)
     if g != 0:
         mx = mx - g * cv2.remap(GAZE_W, mx.astype(np.float32), my.astype(np.float32), cv2.INTER_LINEAR)
@@ -335,13 +379,13 @@ if __name__ == "__main__":
                             "-crf", "14", "-profile:v", "high", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                             "-tag:v", "avc1", os.path.join(OUT, "gothic-lolita.mp4")], stdin=subprocess.PIPE)
     wb = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
-                           "-s", f"{W2}x{H2}", "-r", str(FPS // 2), "-i", "-", "-vf", "scale=1600:-1:flags=lanczos",
-                           "-c:v", "libwebp_anim", "-quality", "75", "-compression_level", "4", "-loop", "0",
+                           "-s", f"{W2}x{H2}", "-r", str(FPS), "-i", "-", "-vf", "fps=24,scale=1280:-1:flags=lanczos",
+                           "-c:v", "libwebp_anim", "-quality", "66", "-compression_level", "4", "-loop", "0",
                            os.path.join(OUT, "gothic-lolita.webp")], stdin=subprocess.PIPE)
     with Pool(WORKERS) as pool:
         for i, fr in enumerate(pool.imap(frame, range(N), chunksize=4)):
             mp4.stdin.write(fr.tobytes())
-            if i % 2 == 0: wb.stdin.write(fr.tobytes())
+            wb.stdin.write(fr.tobytes())
             if i in SNAP: cv2.imwrite(os.path.join(OUT, f"snap{i:03d}.png"), fr)
             if i % 60 == 0: print("frame", i, flush=True)
     for p in (mp4, wb): p.stdin.close(); p.wait()
