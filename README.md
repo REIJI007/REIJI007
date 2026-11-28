@@ -1,5 +1,5 @@
 <!-- 文字均由 scripts/render.py 以霞鹜文楷（LXGW WenKai）渲染为 SVG；
-     卡片按访客自己的 GitHub 主题显示：亮色主题看白色版，暗色主题看黑色版 -->
+     信息卡片由 scripts/render.py 按台北时间切换：白天浅色，夜间深色；顶部动态插画保持原配色 -->
 <div align="center">
 
 <!-- 动态主页图（scripts/animate.py 生成，8 秒无缝循环）：呼吸、眨眼与视线、表情、头部微倾、发丝独立飘动、蝴蝶结/蕾丝/袖口/宝石链各按材质摆动。
