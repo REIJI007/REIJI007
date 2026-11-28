@@ -10,9 +10,10 @@ Layers, back -> front, each with its own motion and material "feel":
   4  head (+hand)      - rigid tiny tilt, rides on the breath; eyes blink and glance aside;
                          hair: braids/bangs/strands with several overlapping frequencies so
                          neighbouring strands move independently
-                         face: a slow smile (mouth corners lift & widen, cheeks push the lower
-                         lids up a touch), a lopsided smirk while she glances aside, a brief
-                         lip press, and corners that breathe with her
+                         face: a quick brow flash, a slow smile (corners lift & widen, cheeks
+                         push the lower lids up, eyes narrow, a faint blush), a lopsided smirk
+                         with an arched brow and a coy extra tilt while she glances aside, a
+                         brief lip press with a small nod, and corners that breathe with her
 Uncovered slivers behind a moving layer are filled from an inpainted plate of the layer below.
 
 deps : opencv-python numpy (+ rembg[cpu] only if the cached masks are missing), ffmpeg
@@ -122,20 +123,32 @@ SMIRK = (-1.0 * MCR, 2.6 * MCR)                                        # right c
 PRESS = (-1.3 * MCL + 1.3 * MCR,                                       # corners draw in
          2.0 * LIP_LO + 0.6 * MCL + 0.6 * MCR)                         # lower lip rolls up
 CORNER = (ZERO, 0.7 * MCL + 0.7 * MCR)                                 # tiny breath-linked lift
+# brows show through the bangs as thin lines: left ~(563..640, 240..270), right ~(700..783, 277..287)
+BROW_L = gbump(602, 256, 30, 9); BROW_R = gbump(742, 282, 32, 8)
+BROW = (ZERO, 4.5 * BROW_L + 4.2 * BROW_R)                             # both brows lift (bangs run vertically, so the strands barely bend)
+ARCH = (ZERO, 3.2 * BROW_R)                                            # right brow arches
+# faint blush on the cheeks (colour only, BGR multiplier), applied to the head layer
+BLUSH = np.clip(gbump(588, 352, 24, 16) + gbump(748, 376, 28, 17), 0, 1)
+BLUSH_TINT = np.array([0.93, 0.90, 1.05], np.float32)
 
 def env(t, a, b, rise, fall):
     """0 -> 1 -> 0 envelope: eases in over [a, a+rise], out over [b-fall, b]."""
     if t <= a or t >= b: return 0.0
     return smooth((t - a) / rise) * (1 - smooth((t - (b - fall)) / fall))
 
-def face_field(t, b):
+def expression(t):
     """Expression timeline, all channels 0 at t = 0 and t = 8 s so the loop stays seamless.
-    1.2 s  a smile grows; it deepens into a lopsided smirk while she glances aside (2.4-4.2 s);
-    5.0 s  it fades; 5.35 s a brief lip press ("hm"); corners breathe with her throughout."""
-    smile = env(t, 1.2, 5.3, 0.7, 0.8)
-    smirk = env(t, 2.45, 4.5, 0.35, 0.5)
-    press = env(t, 5.35, 6.0, 0.18, 0.3)
-    w = ((SMILE, smile), (SMIRK, smirk), (PRESS, press), (CORNER, b))
+    1.0 s  brow flash ("oh, hi"); 1.2 s a smile grows (eyes narrow, faint blush);
+    2.45 s it deepens into a lopsided smirk with an arched brow and a coy tilt while she
+    glances aside; 5.0 s it fades; 5.35 s a brief lip press ("hm") with a small nod."""
+    return dict(flash=env(t, 1.0, 1.65, 0.15, 0.35), smile=env(t, 1.2, 5.3, 0.7, 0.8),
+                smirk=env(t, 2.45, 4.5, 0.35, 0.5), press=env(t, 5.35, 6.0, 0.18, 0.3),
+                nod=env(t, 5.3, 6.15, 0.3, 0.45))
+
+def face_field(t, b):
+    e = expression(t)
+    w = ((SMILE, e['smile']), (SMIRK, e['smirk']), (PRESS, e['press']), (CORNER, b),
+         (BROW, e['flash']), (ARCH, e['smirk']))
     return sum(f[0] * k for f, k in w), sum(f[1] * k for f, k in w)
 
 # ======================= head (+ hand): rigid, hard cut at the jaw =======================
@@ -297,6 +310,7 @@ bA = {n: R(a, cv2.INTER_LINEAR)[..., None] for n, a in
 _au = R(_allA, cv2.INTER_LINEAR)[..., None]
 bigBG = _au * bigPlate + (1 - _au) * big   # static layer: original except under the character
 gx2, gy2 = np.meshgrid(np.arange(W2, dtype=np.float32), np.arange(H2, dtype=np.float32))
+bigBlush = R(BLUSH, cv2.INTER_LINEAR)
 up = lambda f: cv2.resize(f.astype(np.float32), (W2, H2), interpolation=cv2.INTER_LINEAR)
 
 def warp(src, alpha, dx, dy):
@@ -339,8 +353,12 @@ def frame(i):
         acc_dx += zz * sx; acc_dy += zz * sy
     # ---- head: rigid tiny tilt (8 s) on top of the breath, + hair
     s = 0.5 - 0.5 * np.cos(TAU * t / 8.0)
-    lift, ang = 2.5 * s, np.deg2rad(0.9) * s
+    ex = expression(t)
+    lift, ang = 2.5 * s, np.deg2rad(0.9 * s + 0.6 * ex['smirk'])     # + coy tilt with the smirk
     hx, hy = rot_field(ang, PIV); hy = hy + lift
+    # nod: the face pitches forward about the chin -> content above the pivot slides down,
+    # proportional to its height above it (forehead ~5 px at full nod)
+    hy = hy - 0.013 * ex['nod'] * (PIV[1] - gy)
     hb = 2.6 * b * float(BREATH_W[450, 705])                       # breath carried at the neck
     hdx, hdy = hair_field(t)
     head_dx = HEAD * hx + hdx
@@ -356,7 +374,7 @@ def frame(i):
     g = gaze(t)
     if g != 0:
         mx = mx - g * cv2.remap(GAZE_W, mx.astype(np.float32), my.astype(np.float32), cv2.INTER_LINEAR)
-    bc = blink_curve(t)
+    bc = max(blink_curve(t), 0.2 * ex['smile'])                    # eyes narrow when she smiles
     if bc > 0:
         my = cv2.remap(blink_map(bc), mx.astype(np.float32), my.astype(np.float32), cv2.INTER_LINEAR)
     # ---- composite back -> front
@@ -368,6 +386,9 @@ def frame(i):
         out = a * c + (1 - a) * out
     MX = up(mx - gx) * K + gx2; MY = up(my - gy) * K + gy2; MYA = up(myA - gy) * K + gy2
     c = cv2.remap(big, MX, MY, cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT)
+    if ex['smile'] > 0:                                             # faint blush rides with the face
+        bl = cv2.remap(bigBlush, MX, MY, cv2.INTER_LINEAR)[..., None] * (0.55 * ex['smile'])
+        c = c * (1 + bl * (BLUSH_TINT - 1))
     a = cv2.remap(bA['head'], MX, MYA, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)[..., None]
     out = a * c + (1 - a) * out
     return np.clip(out, 0, 255).astype(np.uint8)
