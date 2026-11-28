@@ -1,0 +1,51 @@
+# 用霞鹜文楷重新渲染主页卡片（light / dark 两版）并刷新统计；主题按台北时间每日切换
+name: Render profile
+
+on:
+  schedule:
+    # 台北时间：00:17 刷新统计，06:17 切换浅色，18:17 切换深色。
+    # 使用 :17 避开整点高峰；脚本会以实际启动时的台北时间决定主题。
+    - cron: "17 0,6,18 * * *"
+      timezone: "Asia/Taipei"
+  workflow_dispatch:          # 支持在 Actions 页面手动触发
+  push:
+    branches: [main]
+    paths:                    # 改了脚本或字体时自动重渲染
+      - "scripts/**"
+      - "assets/fonts/**"
+      - ".github/workflows/render.yml"
+
+permissions:
+  contents: write             # 需要写权限以提交生成的 SVG
+
+concurrency:
+  group: render-profile
+  cancel-in-progress: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install fonttools
+        run: pip install fonttools brotli
+
+      # GITHUB_TOKEN 只读取公开数据（GraphQL），取数失败时脚本会保留旧图
+      - name: Render SVGs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/render.py
+
+      # 仅在 SVG 有变化时提交；GITHUB_TOKEN 的提交不会再次触发工作流，不会死循环
+      - name: Commit changes
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add assets/svg README.md
+          git diff --cached --quiet || git commit -m "chore: update profile SVGs"
+          git push
