@@ -3,7 +3,7 @@
 <div align="center">
 
 <!-- 动态主页图（scripts/animate.py 生成，8 秒无缝循环）：呼吸、眨眼与视线、表情、头部微倾、发丝独立飘动、蝴蝶结/蕾丝/袖口/宝石链各按材质摆动。
-     主图为 AVIF（1920×1080 · 60fps · AV1 4:4:4，色度不降采样，红唇与线稿边缘无锯齿）；不支持动态 AVIF 的浏览器回退到 WebP（1280×720 · 30fps）；点击打开 1080p60 MP4 -->
+     主图为 AVIF（1920×1080 · 60fps · AV1 10-bit 4:4:4，嘴部先做 JPEG 去块与亮度引导色度重建，红唇边缘无锯齿、渐变无色带）；不支持动态 AVIF 的浏览器回退到 WebP（1280×720 · 30fps）；点击打开 1080p60 MP4 -->
 <a href="./assets/gothic-lolita.mp4"><picture>
   <source srcset="./assets/gothic-lolita.avif" type="image/avif" />
   <img src="./assets/gothic-lolita.webp" width="100%" alt="Warm gothic Lolita illustration (animated)" />

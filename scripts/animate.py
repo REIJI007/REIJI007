@@ -16,14 +16,17 @@ Layers, back -> front, each with its own motion and material "feel":
                          brief lip press with a small nod, and corners that breathe with her
 Uncovered slivers behind a moving layer are filled from an inpainted plate of the layer below.
 
-deps : opencv-python numpy (+ rembg[cpu] only if the cached masks are missing), ffmpeg
+deps : opencv-python numpy (+ rembg[cpu] only if the cached masks are missing), ffmpeg (>= 6, with zimg)
 usage: python scripts/animate.py assets/gothic-lolita.jpg out_dir [scale=2.4] [workers=2]
-       Frames are rendered at scale x source (2.4 -> 3840x2160 = 2x2 supersampling), area-
-       downsampled to 1920x1080 (anti-aliasing), then luma-sharpened. Outputs, 8 s seamless loop:
-       -> out_dir/gothic-lolita.avif  1920x1080@60, AV1 4:4:4 (README hero; full-res chroma, so
-                                      red lips / line art keep clean edges)
+       PREVIEW=120,210 python scripts/animate.py ...   -> only those frames, as 16-bit PNGs
+       The lower face of the source is first cleaned (JPEG deblock + luma-guided chroma, see
+       clean_face). Frames are rendered at scale x source (2.4 -> 3840x2160 = 2x2 supersampling),
+       area-downsampled to 1920x1080 (anti-aliasing), edge-gated luma sharpening, kept at 16 bit
+       until each encoder quantises once. Outputs, 8 s seamless loop:
+       -> out_dir/gothic-lolita.avif  1920x1080@60, AV1 10-bit 4:4:4 (README hero; full-res chroma
+                                      for the red lips, 10-bit so gradients do not band)
           out_dir/gothic-lolita.webp  1280x720@30 fallback for browsers without animated AVIF
-          out_dir/gothic-lolita.mp4   1920x1080@60 H.264 (click-through)
+          out_dir/gothic-lolita.mp4   1920x1080@60 H.264 8-bit 4:2:0 BT.709, dithered (click-through)
 """
 import sys, os, subprocess, numpy as np, cv2
 from multiprocessing import Pool
@@ -41,6 +44,41 @@ img = cv2.imread(SRC).astype(np.float32)
 H, W = img.shape[:2]
 gx, gy = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32))
 GRAY = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_BGR2GRAY)
+
+# ======================= source clean-up (mouth / lower face) =======================
+# The source JPEG is 4:2:0: its chroma is half resolution and quantised in 16x16 blocks, so the
+# red of the lips sits on the skin as a blocky staircase that does not follow the drawn line.
+# Every expression warps those stairs, which reads as jagged, crawling lip edges. Fix it at the
+# root, before any warp: deblock luma with a self-guided filter (flattens the low-amplitude block
+# steps, keeps the line art), then re-derive chroma with luma as the guide so the red edge snaps
+# to the drawn lip line. Limited to the lower face: elsewhere (hair, ribbons) the joint filter
+# would wash out small saturated details that are not a linear function of luma.
+def guided(I, p, r, eps):
+    b = lambda x: cv2.boxFilter(x, -1, (2 * r + 1, 2 * r + 1))
+    mI, mp = b(I), b(p)
+    a = (b(I * p) - mI * mp) / (b(I * I) - mI * mI + eps)
+    return b(a) * I + b(mp - a * mI)
+
+def clean_face(src):
+    ycc = cv2.cvtColor(src, cv2.COLOR_BGR2YCrCb)
+    # eps 30: JPEG mosquito noise around the lip corner / jaw (+-3..5 levels) is flattened; without
+    # this the smile warp stretches it into faint streaks parallel to the jaw line
+    y = guided(ycc[..., 0], ycc[..., 0], 2, 30.0)
+    ycc[..., 0] = y
+    k = np.ones((7, 7), np.uint8)
+    for c in (1, 2):
+        ch = ycc[..., c]
+        # clamp to the original local range: the joint filter may sharpen the red edge, but it may
+        # never invent a colour that is not already present nearby (it extrapolates in dark areas)
+        ycc[..., c] = np.clip(guided(y, ch, 4, 40.0), cv2.erode(ch, k), cv2.dilate(ch, k))
+    m = np.zeros(src.shape[:2], np.float32)
+    cv2.ellipse(m, (652, 398), (92, 46), 8, 0, 360, 1.0, -1)          # lips + mouth corners + chin
+    m = cv2.GaussianBlur(m, (0, 0), 10)[..., None]
+    # clip: YCrCb->BGR can overshoot by a few levels on saturated red, and the plates below cast to
+    # uint8 (which would wrap -1 to 255 and paint false colour)
+    return np.clip(m * cv2.cvtColor(ycc, cv2.COLOR_YCrCb2BGR) + (1 - m) * src, 0, 255)
+
+img = clean_face(img)
 
 def poly(pts):
     m = np.zeros((H, W), np.uint8); cv2.fillPoly(m, [np.array(pts, np.int32)], 1); return m
@@ -140,7 +178,11 @@ BLUSH_TINT = np.array([0.93, 0.90, 1.05], np.float32)
 def env(t, a, b, rise, fall):
     """0 -> 1 -> 0 envelope: eases in over [a, a+rise], out over [b-fall, b]."""
     if t <= a or t >= b: return 0.0
-    return smooth((t - a) / rise) * (1 - smooth((t - (b - fall)) / fall))
+    return smoother((t - a) / rise) * (1 - smoother((t - (b - fall)) / fall))
+
+def smoother(x):                          # C2 ease: zero velocity AND acceleration at both ends,
+    x = min(max(x, 0.0), 1.0)             # so lips start/stop moving without a visible jerk
+    return x * x * x * (x * (6 * x - 15) + 10)
 
 def expression(t):
     """Expression timeline, all channels 0 at t = 0 and t = 8 s so the loop stays seamless.
@@ -323,7 +365,9 @@ _au = R(_allA, cv2.INTER_LINEAR)[..., None]
 bigBG = _au * bigPlate + (1 - _au) * big   # static layer: original except under the character
 gx2, gy2 = np.meshgrid(np.arange(W2, dtype=np.float32), np.arange(H2, dtype=np.float32))
 bigBlush = R(BLUSH, cv2.INTER_LINEAR)
-up = lambda f: cv2.resize(f.astype(np.float32), (W2, H2), interpolation=cv2.INTER_LINEAR)
+# motion fields are upsampled bicubically: a bilinear field has kinks at every source pixel, which
+# bend thin warped lines (lip line, lash line) into tiny polylines
+up = lambda f: cv2.resize(f.astype(np.float32), (W2, H2), interpolation=cv2.INTER_CUBIC)
 
 def warp(src, alpha, dx, dy):
     MX = up(dx) * K + gx2; MY = up(dy) * K + gy2
@@ -405,31 +449,57 @@ def frame(i):
     out = a * c + (1 - a) * out
     return finish(out)
 
-SHARP_SIGMA, SHARP_AMT = 1.0, 0.7
+SHARP = ((0.8, 1.05), (2.0, 0.35))       # (sigma, amount): fine edge crispness + mid-scale punch
 def finish(out):
-    """supersampled frame -> 1080p: area filter = box-averaged anti-aliasing of every warped edge,
-    then an unsharp mask on luma only (sharpening chroma would put coloured halos on line art)."""
+    """supersampled frame -> 1080p, returned as 16-bit BGR (no 8-bit rounding inside the pipeline;
+    the encoders quantise once, at 10 bit for AVIF, so smooth skin / blush gradients do not band).
+    1. area filter = box-averaged anti-aliasing of every warped edge;
+    2. two-scale unsharp mask on luma only (sharpening chroma would put coloured halos on line art),
+       gated by edge strength so flat gradients are never boosted (boosting them is what turns an
+       invisible 1-level step into a visible band), and clamped to the 3x3 range (no halos)."""
     small = cv2.resize(np.clip(out, 0, 255).astype(np.float32), (OUT_W, OUT_H), interpolation=cv2.INTER_AREA)
     ycc = cv2.cvtColor(small, cv2.COLOR_BGR2YCrCb)
-    y = ycc[..., 0]
-    ys = y + SHARP_AMT * (y - cv2.GaussianBlur(y, (0, 0), SHARP_SIGMA))
-    # anti-halo: never brighter/darker than the 3x3 neighbourhood already is, so dark line art
-    # gets crisper edges without the bright glow an unclamped unsharp mask paints around it
+    y = ycc[..., 0].copy()
+    det = sum(a * (y - cv2.GaussianBlur(y, (0, 0), s)) for s, a in SHARP)
+    yb = cv2.GaussianBlur(y, (0, 0), 1.0)
+    g = cv2.magnitude(cv2.Sobel(yb, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(yb, cv2.CV_32F, 0, 1, ksize=3)) / 8
+    gate = smooth((g - 0.6) / 2.4)
     k = np.ones((3, 3), np.uint8)
-    ycc[..., 0] = np.clip(ys, cv2.erode(y, k), cv2.dilate(y, k))
-    return np.clip(cv2.cvtColor(ycc, cv2.COLOR_YCrCb2BGR), 0, 255).astype(np.uint8)
+    ycc[..., 0] = np.clip(y + gate * det, cv2.erode(y, k), cv2.dilate(y, k))
+    bgr = np.clip(cv2.cvtColor(ycc, cv2.COLOR_YCrCb2BGR), 0, 255)
+    return np.round(bgr * 257.0).astype(np.uint16)
 
 if __name__ == "__main__":
     SNAP = {int(x) for x in os.environ.get("SNAP", "").split(",") if x}
-    raw = ["ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
+    PREVIEW = [int(x) for x in os.environ.get("PREVIEW", "").split(",") if x]
+    if PREVIEW:                           # PREVIEW=150,240 -> just those frames as 16-bit PNGs
+        with Pool(WORKERS) as pool:
+            for i, fr in zip(PREVIEW, pool.imap(frame, PREVIEW)):
+                cv2.imwrite(os.path.join(OUT, f"preview{i:03d}.png"), fr)
+        sys.exit(0)
+    # frames arrive as 16-bit BGR and are converted ONCE per output by zimg: BT.709 matrix, limited
+    # range, Lanczos chroma resampling, ordered dither (static, so it never crawls between frames)
+    raw = ["ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr48le",
            "-s", f"{OUT_W}x{OUT_H}", "-r", str(FPS), "-i", "-"]
-    enc = [  # every output keeps an even frame cadence (60 or 30 fps, never 60 -> 24 judder)
-        raw + ["-c:v", "libx264", "-preset", "slow", "-crf", "14", "-profile:v", "high", "-pix_fmt", "yuv420p",
-               "-movflags", "+faststart", "-tag:v", "avc1", os.path.join(OUT, "gothic-lolita.mp4")],
-        raw + ["-vf", "format=yuv444p", "-c:v", "libaom-av1", "-crf", "26", "-b:v", "0", "-cpu-used", "4",
-               "-row-mt", "1", "-tiles", "2x2", "-g", "480", os.path.join(OUT, "gothic-lolita.avif")],
-        raw + ["-vf", "fps=30,scale=1280:-1:flags=lanczos", "-c:v", "libwebp_anim", "-quality", "66",
-               "-compression_level", "4", "-loop", "0", os.path.join(OUT, "gothic-lolita.webp")],
+    tags = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]
+    z = "zscale=f=lanczos:min=gbr:pin=709:tin=709:rin=full:m=709:p=709:t=709:r=limited:d=ordered,format="
+    enc = [  # constant frame cadence everywhere (60 or exactly half, 30): no judder, no dropped frames
+        # MP4: 8-bit 4:2:0 for universal playback; aq-mode 3 biases bits toward flat/dark areas
+        # (where banding appears), deblocking lowered so thin line art is not smeared.
+        # One keyframe per loop, no scene cuts, and I/P/B at equal quality (ipratio = pbratio = 1):
+        # x264's default periodic, higher-quality keyframes (here at frame 250 and at the loop seam)
+        # make the whole picture visibly "pop" once - a flash that reads like tearing.
+        raw + ["-vf", z + "yuv420p", "-c:v", "libx264", "-preset", "slow", "-crf", "11", "-profile:v", "high",
+               "-x264-params", "aq-mode=3:aq-strength=0.9:deblock=-1,-1:keyint=480:min-keyint=480:"
+                               "scenecut=0:ipratio=1.0:pbratio=1.0",
+               *tags, "-movflags", "+faststart", "-tag:v", "avc1", os.path.join(OUT, "gothic-lolita.mp4")],
+        # AVIF (README hero): 10-bit 4:4:4 AV1 - full-res chroma for the red lips, 4x finer tonal
+        # steps than 8-bit so gradients stay smooth
+        raw + ["-vf", z + "yuv444p10le", "-c:v", "libaom-av1", "-crf", "22", "-b:v", "0", "-cpu-used", "5",
+               "-row-mt", "1", "-tiles", "2x2", "-g", "480", "-aom-params", "enable-keyframe-filtering=0", *tags, "-loop", "0",
+               os.path.join(OUT, "gothic-lolita.avif")],
+        raw + ["-vf", "fps=30,scale=1280:-1:flags=lanczos+accurate_rnd,format=yuv420p", "-c:v", "libwebp_anim",
+               "-quality", "70", "-compression_level", "4", "-loop", "0", os.path.join(OUT, "gothic-lolita.webp")],
     ]
     procs = [subprocess.Popen(e, stdin=subprocess.PIPE) for e in enc]
     with Pool(WORKERS) as pool:
