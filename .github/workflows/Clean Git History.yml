@@ -31,7 +31,8 @@ jobs:
           TREE=$(git write-tree)
           
           # 创建一个新的提交，使用保存的树对象
-          NEW_COMMIT=$(echo "${{ github.event.inputs.commit_message }}" | git commit-tree $TREE)
+          # 定时触发时没有 inputs，回退到默认提交信息，避免生成空白提交信息
+          NEW_COMMIT=$(echo "${{ github.event.inputs.commit_message || 'chore: reset repository history' }}" | git commit-tree $TREE)
           
           # 将main分支指向新的提交
           git update-ref refs/heads/main $NEW_COMMIT

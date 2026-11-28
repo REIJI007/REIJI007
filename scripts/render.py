@@ -6,7 +6,8 @@ GitHub README 会过滤所有 CSS / font 标签，无法指定字体。
 因此把所有文字用「霞鹜文楷 LXGW WenKai」排成 SVG：
   - 每个 SVG 只嵌入实际用到的字形（WOFF2 子集，base64 内联），体积约几十 KB
   - 全部文字拼成一张自带底色的卡片，输出 light / dark 两版；
-    按台北时间 6:00–18:00 用白色版、其余时间用黑色版，复制为 card.svg（README 只引用它）
+    README 用 #gh-light-mode-only / #gh-dark-mode-only 按访客自己的 GitHub 主题选择 light / dark
+    （昼夜意象随主题固定：亮色版是阳伞，暗色版是点亮的烛台）
   - stats 卡片通过 GitHub GraphQL 实时取数（Actions 中运行，每日更新）
 
 用法:
@@ -826,7 +827,6 @@ def write(name, content):
     print(f"  {name:<22} {len(content.encode())/1024:6.1f} KB")
 
 STATS_CACHE = OUT / "stats.json"
-DAY_START, DAY_END = 6, 18   # 台北时间 6:00–18:00 为白天
 
 def load_stats():
     """取最新 stats；失败时退回上次缓存，保证卡片总能完整渲染"""
@@ -863,10 +863,6 @@ def main():
             render_footer(c),
         ])
         write(f"card-{mode}.svg", cards[mode])
-    hour = datetime.datetime.now(ZoneInfo("Asia/Taipei")).hour
-    mode = "light" if DAY_START <= hour < DAY_END else "dark"
-    write("card.svg", cards[mode])
-    print(f"台北时间 {hour} 点 → 当前使用 {mode} 版")
 
 if __name__ == "__main__":
     main()
