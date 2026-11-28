@@ -6,7 +6,7 @@ GitHub README 会过滤所有 CSS / font 标签，无法指定字体。
 因此把所有文字用「霞鹜文楷 LXGW WenKai」排成 SVG：
   - 每个 SVG 只嵌入实际用到的字形（WOFF2 子集，base64 内联），体积约几十 KB
   - 全部文字拼成一张自带底色的卡片，输出 light / dark 两版；
-    README 用 <picture> + prefers-color-scheme 按访客自己的 GitHub 主题选择 light / dark
+    README 用 #gh-light-mode-only / #gh-dark-mode-only 按访客自己的 GitHub 主题选择 light / dark
     （昼夜意象随主题固定：亮色版是阳伞，暗色版是点亮的烛台）
   - stats 卡片通过 GitHub GraphQL 实时取数（Actions 中运行，每日更新）
 
