@@ -17,14 +17,20 @@ Layers, back -> front, each with its own motion and material "feel":
 Uncovered slivers behind a moving layer are filled from an inpainted plate of the layer below.
 
 deps : opencv-python numpy (+ rembg[cpu] only if the cached masks are missing), ffmpeg
-usage: python scripts/animate.py assets/gothic-lolita.jpg out_dir [scale=1.6] [workers=2]
-       -> out_dir/gothic-lolita.mp4 (2560x1440@60, 8 s loop) + gothic-lolita.webp (1280@24)
+usage: python scripts/animate.py assets/gothic-lolita.jpg out_dir [scale=2.4] [workers=2]
+       Frames are rendered at scale x source (2.4 -> 3840x2160 = 2x2 supersampling), area-
+       downsampled to 1920x1080 (anti-aliasing), then luma-sharpened. Outputs, 8 s seamless loop:
+       -> out_dir/gothic-lolita.avif  1920x1080@60, AV1 4:4:4 (README hero; full-res chroma, so
+                                      red lips / line art keep clean edges)
+          out_dir/gothic-lolita.webp  1280x720@30 fallback for browsers without animated AVIF
+          out_dir/gothic-lolita.mp4   1920x1080@60 H.264 (click-through)
 """
 import sys, os, subprocess, numpy as np, cv2
 from multiprocessing import Pool
 
 SRC, OUT = sys.argv[1], sys.argv[2]
-K = float(sys.argv[3]) if len(sys.argv) > 3 else 1.6
+K = float(sys.argv[3]) if len(sys.argv) > 3 else 2.4
+OUT_W, OUT_H = 1920, 1080              # delivered resolution (1080p)
 WORKERS = int(sys.argv[4]) if len(sys.argv) > 4 else 2
 os.makedirs(OUT, exist_ok=True)
 FPS, DUR = 60, 8.0                       # 8 s loop: every period below divides 8 s exactly
@@ -268,8 +274,14 @@ FRILL = soft_poly([(600, 752), (1000, 752), (1000, 850), (600, 850)], 10) * smoo
 # ======================= plates (inpainted fills for uncovered slivers) =======================
 u8 = img.astype(np.uint8)
 _allA = np.maximum.reduce([A_HEAD, A_BODY, A_LACE])
-BG_PLATE = cv2.inpaint(u8, ring(_allA, 4, 22) * 255, 5, cv2.INPAINT_TELEA).astype(np.float32)
-_bh = ring(A_HEAD, 4, 22) | cv2.dilate(NECK, np.ones((9, 9), np.uint8)) \
+# Fill the WHOLE character footprint (not just a ring around its edge): with a ring, the inpaint
+# also sampled the character's own interior, so a swinging braid uncovered dark hair-coloured
+# smears instead of the light background. Only what a moving edge uncovers is ever seen.
+BG_PLATE = cv2.inpaint(u8, cv2.dilate((_allA > 0.02).astype(np.uint8), np.ones((9, 9), np.uint8)) * 255,
+                       5, cv2.INPAINT_TELEA).astype(np.float32)
+# body behind the head: likewise fill the whole head footprint from the body around it
+_bh = cv2.dilate((A_HEAD > 0.02).astype(np.uint8), np.ones((9, 9), np.uint8)) \
+      | cv2.dilate(NECK, np.ones((9, 9), np.uint8)) \
       | cv2.dilate((A_ACC > 0.02).astype(np.uint8), np.ones((7, 7), np.uint8)) | ring(A_LACE, 4, 14)
 BODY_SRC = cv2.inpaint(u8, _bh * 255, 5, cv2.INPAINT_TELEA).astype(np.float32)
 
@@ -391,23 +403,39 @@ def frame(i):
         c = c * (1 + bl * (BLUSH_TINT - 1))
     a = cv2.remap(bA['head'], MX, MYA, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)[..., None]
     out = a * c + (1 - a) * out
-    return np.clip(out, 0, 255).astype(np.uint8)
+    return finish(out)
+
+SHARP_SIGMA, SHARP_AMT = 1.0, 0.7
+def finish(out):
+    """supersampled frame -> 1080p: area filter = box-averaged anti-aliasing of every warped edge,
+    then an unsharp mask on luma only (sharpening chroma would put coloured halos on line art)."""
+    small = cv2.resize(np.clip(out, 0, 255).astype(np.float32), (OUT_W, OUT_H), interpolation=cv2.INTER_AREA)
+    ycc = cv2.cvtColor(small, cv2.COLOR_BGR2YCrCb)
+    y = ycc[..., 0]
+    ys = y + SHARP_AMT * (y - cv2.GaussianBlur(y, (0, 0), SHARP_SIGMA))
+    # anti-halo: never brighter/darker than the 3x3 neighbourhood already is, so dark line art
+    # gets crisper edges without the bright glow an unclamped unsharp mask paints around it
+    k = np.ones((3, 3), np.uint8)
+    ycc[..., 0] = np.clip(ys, cv2.erode(y, k), cv2.dilate(y, k))
+    return np.clip(cv2.cvtColor(ycc, cv2.COLOR_YCrCb2BGR), 0, 255).astype(np.uint8)
 
 if __name__ == "__main__":
     SNAP = {int(x) for x in os.environ.get("SNAP", "").split(",") if x}
-    mp4 = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
-                            "-s", f"{W2}x{H2}", "-r", str(FPS), "-i", "-", "-c:v", "libx264", "-preset", "slow",
-                            "-crf", "14", "-profile:v", "high", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                            "-tag:v", "avc1", os.path.join(OUT, "gothic-lolita.mp4")], stdin=subprocess.PIPE)
-    wb = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
-                           "-s", f"{W2}x{H2}", "-r", str(FPS), "-i", "-", "-vf", "fps=24,scale=1280:-1:flags=lanczos",
-                           "-c:v", "libwebp_anim", "-quality", "66", "-compression_level", "4", "-loop", "0",
-                           os.path.join(OUT, "gothic-lolita.webp")], stdin=subprocess.PIPE)
+    raw = ["ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
+           "-s", f"{OUT_W}x{OUT_H}", "-r", str(FPS), "-i", "-"]
+    enc = [  # every output keeps an even frame cadence (60 or 30 fps, never 60 -> 24 judder)
+        raw + ["-c:v", "libx264", "-preset", "slow", "-crf", "14", "-profile:v", "high", "-pix_fmt", "yuv420p",
+               "-movflags", "+faststart", "-tag:v", "avc1", os.path.join(OUT, "gothic-lolita.mp4")],
+        raw + ["-vf", "format=yuv444p", "-c:v", "libaom-av1", "-crf", "26", "-b:v", "0", "-cpu-used", "4",
+               "-row-mt", "1", "-tiles", "2x2", "-g", "480", os.path.join(OUT, "gothic-lolita.avif")],
+        raw + ["-vf", "fps=30,scale=1280:-1:flags=lanczos", "-c:v", "libwebp_anim", "-quality", "66",
+               "-compression_level", "4", "-loop", "0", os.path.join(OUT, "gothic-lolita.webp")],
+    ]
+    procs = [subprocess.Popen(e, stdin=subprocess.PIPE) for e in enc]
     with Pool(WORKERS) as pool:
         for i, fr in enumerate(pool.imap(frame, range(N), chunksize=4)):
-            mp4.stdin.write(fr.tobytes())
-            wb.stdin.write(fr.tobytes())
+            for pr in procs: pr.stdin.write(fr.tobytes())
             if i in SNAP: cv2.imwrite(os.path.join(OUT, f"snap{i:03d}.png"), fr)
             if i % 60 == 0: print("frame", i, flush=True)
-    for p in (mp4, wb): p.stdin.close(); p.wait()
-    print("done", N, W2, H2)
+    for pr in procs: pr.stdin.close(); pr.wait()
+    print("done", N, f"{W2}x{H2} -> {OUT_W}x{OUT_H}")
