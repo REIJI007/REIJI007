@@ -25,7 +25,11 @@ FONT_DIR = ROOT / "assets" / "fonts"
 OUT = ROOT / "assets" / "svg"
 USER = os.environ.get("PROFILE_USER", "REIJI007")
 W = 830  # README 内容区宽度，SVG 以 width=100% 自适应缩放
-TODAY = datetime.datetime.now(ZoneInfo("Asia/Taipei")).date()
+NOW = datetime.datetime.now(ZoneInfo("Asia/Taipei"))
+TODAY = NOW.date()
+# The profile is a single shared page: everyone sees the same Taipei-time theme.
+# 06:00–17:59 is light; 18:00–05:59 is dark.
+CURRENT_THEME = "light" if 6 <= NOW.hour < 18 else "dark"
 
 # ───────────────────────── 配色（取自顶部插画）─────────────────────────
 # 米白羊皮纸 / 深棕墨 / 酒红玫瑰 / 古金雕花 / 深蓝裙装
@@ -863,6 +867,20 @@ def main():
             render_footer(c),
         ])
         write(f"card-{mode}.svg", cards[mode])
+
+    # README is static HTML, so switch the referenced asset rather than relying on JS.
+    readme_path = ROOT / "README.md"
+    readme = readme_path.read_text(encoding="utf-8")
+    previous_asset = "card-dark.svg" if CURRENT_THEME == "light" else "card-light.svg"
+    current_asset = f"card-{CURRENT_THEME}.svg"
+    if previous_asset in readme:
+        readme_path.write_text(
+            readme.replace(previous_asset, current_asset, 1), encoding="utf-8"
+        )
+    elif current_asset not in readme:
+        raise RuntimeError("README does not contain the expected theme card reference")
+
+    print(f"Taipei time: {NOW:%Y-%m-%d %H:%M}; active theme: {CURRENT_THEME}")
 
 if __name__ == "__main__":
     main()
