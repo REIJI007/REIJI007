@@ -1,0 +1,51 @@
+# 用霞鹜文楷重新渲染主页卡片：昼夜切换（台北时间 6:00 白 / 18:00 黑）+ 刷新统计
+name: Render profile
+
+on:
+  schedule:
+    # GitHub 的定时任务在整点高峰常被延迟甚至丢弃，只在 6:00/18:00 各跑一次时，丢一次就会
+    # 错一整个半天。改为每 15 分钟跑一次（避开整点），render.py 按运行时的台北时间选主题；
+    # 输出可复现，内容没变就不提交，所以一天只会在换主题 / 统计变化时产生提交。
+    - cron: "7,22,37,52 * * * *"   # 每 15 分钟一次，避开整点与半点
+  workflow_dispatch:          # 支持在 Actions 页面手动触发
+  push:
+    branches: [main]
+    paths:                    # 改了脚本或字体时自动重渲染
+      - "scripts/**"
+      - "assets/fonts/**"
+      - ".github/workflows/render.yml"
+
+permissions:
+  contents: write             # 需要写权限以提交生成的 SVG
+
+concurrency:
+  group: render-profile
+  cancel-in-progress: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install fonttools
+        run: pip install fonttools brotli
+
+      # GITHUB_TOKEN 只读取公开数据（GraphQL），取数失败时脚本会保留旧图
+      - name: Render SVGs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/render.py
+
+      # 仅在 SVG 有变化时提交；GITHUB_TOKEN 的提交不会再次触发工作流，不会死循环
+      - name: Commit changes
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add assets/svg
+          git diff --cached --quiet || git commit -m "chore: update profile SVGs"
+          git push
