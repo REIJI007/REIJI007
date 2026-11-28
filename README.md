@@ -9,8 +9,7 @@
   <img src="./assets/gothic-lolita.webp" width="100%" alt="Warm gothic Lolita illustration (animated)" />
 </picture></a>
 
-<!-- #gh-*-mode-only 由 GitHub 按访客在 GitHub 里选的主题显示（含"跟随系统"），比 <picture> 的 prefers-color-scheme（只看操作系统）准确 -->
-<img src="./assets/svg/card-light.svg#gh-light-mode-only" width="100%" alt="REIJI007 — 你好，欢迎 · Hello, welcome · こんにちは、ようこそ。简介：一个喜欢绘画、作曲、编程的Z世代。A Gen Z who loves drawing, composing, and coding. 絵を描くこと、曲を作ること、コードを書くことが好きなZ世代。GitHub 统计与贡献热力图。感谢来访 · Thanks for stopping by · またね。" />
-<img src="./assets/svg/card-dark.svg#gh-dark-mode-only" width="100%" alt="REIJI007 — 你好，欢迎 · Hello, welcome · こんにちは、ようこそ。简介：一个喜欢绘画、作曲、编程的Z世代。A Gen Z who loves drawing, composing, and coding. 絵を描くこと、曲を作ること、コードを書くことが好きなZ世代。GitHub 统计与贡献热力图。感谢来访 · Thanks for stopping by · またね。" />
+<!-- 信息卡片随台北时间切换：06:00–17:59 使用浅色主题，18:00–05:59 使用深色主题；顶部动态插画保留原始配色。 -->
+<img src="./assets/svg/card-dark.svg" width="100%" alt="REIJI007 — 你好，欢迎 · Hello, welcome · こんにちは、ようこそ。简介：一个喜欢绘画、作曲、编程的Z世代。A Gen Z who loves drawing, composing, and coding. 絵を描くこと、曲を作ること、コードを書くことが好きなZ世代。GitHub 统计与贡献热力图。感谢来访 · Thanks for stopping by · またね。" />
 
 </div>
