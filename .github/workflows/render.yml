@@ -3,8 +3,10 @@ name: Render profile
 
 on:
   schedule:
-    # 每天一次刷新统计；避开整点高峰（UTC 16:17 = 台北 0:17，跨日后立刻更新季节装饰与热力图）
-    - cron: "17 16 * * *"
+    # 台北时间：00:17 刷新统计，06:17 切换浅色，18:17 切换深色。
+    # 使用 :17 避开整点高峰；脚本会以实际启动时的台北时间决定主题。
+    - cron: "17 0,6,18 * * *"
+      timezone: "Asia/Taipei"
   workflow_dispatch:          # 支持在 Actions 页面手动触发
   push:
     branches: [main]
@@ -44,6 +46,6 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
-          git add assets/svg
+          git add assets/svg README.md
           git diff --cached --quiet || git commit -m "chore: update profile SVGs"
           git push
